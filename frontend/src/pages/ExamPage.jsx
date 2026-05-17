@@ -9,7 +9,7 @@ const ExamPage = () => {
   const navigate = useNavigate();
   const [metrics, setMetrics] = useState(null);
   const [sessionActive, setSessionActive] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(3600); // 60 minutes
+  const [timeLeft, setTimeLeft] = useState(300); // 5 minutes
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState(null);
 
@@ -54,10 +54,22 @@ const ExamPage = () => {
   useEffect(() => {
     // Timer
     const timer = setInterval(() => {
-      setTimeLeft(prev => (prev > 0 ? prev - 1 : 0));
+      setTimeLeft(prev => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          return 0;
+        }
+        return prev - 1;
+      });
     }, 1000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (timeLeft === 0 && sessionActive) {
+      handleEndExam();
+    }
+  }, [timeLeft, sessionActive]);
 
   const formatTime = (seconds) => {
     const m = Math.floor(seconds / 60);
@@ -98,20 +110,38 @@ const ExamPage = () => {
 
   const renderWarning = () => {
     if (!metrics) return null;
+    
+    const warnings = [];
+    
+    // Low attention warning
+    if (metrics.warning_triggered) {
+      warnings.push(
+        <div key="attention-warning" className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl flex items-start gap-3 mb-3">
+          <AlertTriangle className="text-amber-600 flex-shrink-0 mt-0.5" size={18} />
+          <div className="text-left">
+            <p className="font-semibold text-xs text-amber-900 uppercase tracking-wider">Attention Notice</p>
+            <p className="text-xs mt-0.5 text-amber-800">Your exam session may go under review before evaluation.</p>
+          </div>
+        </div>
+      );
+    }
+
+    // Existing live error warnings
     if (!metrics.valid && metrics.error && metrics.error !== "Not started") {
         let msg = "";
         if (metrics.error === "no_face") msg = "Face not detected!";
         if (metrics.error === "multiple_faces") msg = "Multiple faces detected!";
         if (msg) {
-            return (
-                <div className="bg-danger/10 border border-danger/30 text-danger px-4 py-3 rounded-xl flex items-center gap-3 mb-4 animate-pulse">
+            warnings.push(
+                <div key="face-warning" className="bg-danger/10 border border-danger/30 text-danger px-4 py-3 rounded-xl flex items-center gap-3 mb-3 animate-pulse">
                     <AlertTriangle size={20} />
-                    <span className="font-medium">{msg}</span>
+                    <span className="font-medium text-sm">{msg}</span>
                 </div>
             );
         }
     }
-    return null;
+
+    return warnings.length > 0 ? <div className="flex flex-col">{warnings}</div> : null;
   };
 
   const renderSummaryModal = () => {
@@ -130,30 +160,32 @@ const ExamPage = () => {
                 <span className="font-mono text-sm text-textMain font-semibold">{summary.session_id}</span>
               </div>
               <div className="flex justify-between items-center pb-3 border-b border-indigo-50">
+                <span className="text-textMain/60 text-sm font-medium">Average Attention</span>
+                <span className="text-lg font-bold text-primary">{summary.average_attention}%</span>
+              </div>
+              <div className="flex justify-between items-center">
                 <span className="text-textMain/60 text-sm font-medium">Average Engagement</span>
                 <span className="text-lg font-bold text-primary">{summary.average_engagement}%</span>
               </div>
-              <div className="flex justify-between items-center pb-3 border-b border-indigo-50">
-                <span className="text-textMain/60 text-sm font-medium">Face Missing Events</span>
-                <span className={`font-semibold ${summary.face_missing_events > 0 ? 'text-warning' : 'text-success'}`}>
-                  {summary.face_missing_events}
-                </span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-textMain/60 text-sm font-medium">Multiple Face Events</span>
-                <span className={`font-semibold ${summary.multiple_face_events > 0 ? 'text-danger' : 'text-success'}`}>
-                  {summary.multiple_face_events}
-                </span>
-              </div>
             </div>
 
-            <div className="bg-success/5 border border-success/15 rounded-xl p-4 flex gap-3 text-success text-left">
-              <Activity className="flex-shrink-0 mt-0.5 animate-pulse" size={18} />
-              <div>
-                <h4 className="font-semibold text-sm">Session Verified</h4>
-                <p className="text-xs text-success/80">Academic integrity was successfully monitored throughout this assessment.</p>
+            {summary.warning_triggered ? (
+              <div className="bg-warning/10 border border-warning/30 rounded-xl p-4 flex gap-3 text-warning text-left animate-pulse">
+                <AlertTriangle className="flex-shrink-0 mt-0.5" size={18} />
+                <div>
+                  <h4 className="font-semibold text-sm">Under Review</h4>
+                  <p className="text-xs text-warning/90">This session has been flagged for review due to low attention levels.</p>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="bg-success/5 border border-success/15 rounded-xl p-4 flex gap-3 text-success text-left">
+                <Activity className="flex-shrink-0 mt-0.5 animate-pulse" size={18} />
+                <div>
+                  <h4 className="font-semibold text-sm">Session Verified</h4>
+                  <p className="text-xs text-success/80">Academic integrity was successfully monitored throughout this assessment.</p>
+                </div>
+              </div>
+            )}
 
             <button
               onClick={() => navigate('/')}
@@ -275,33 +307,6 @@ const ExamPage = () => {
                   className="h-full bg-primary transition-all duration-500 ease-out"
                   style={{ width: `${metrics?.engagement || 0}%` }}
                 />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4 pt-4 border-t border-indigo-50">
-              <div className="space-y-1">
-                <div className="flex items-center gap-1.5 text-textMain/60 text-xs font-medium uppercase">
-                  <Eye size={14} /> Attention
-                </div>
-                <div className={`font-semibold ${getStatusColor(metrics?.attention, 'attention')}`}>
-                  {metrics?.attention || "Unknown"}
-                </div>
-              </div>
-              <div className="space-y-1">
-                <div className="flex items-center gap-1.5 text-textMain/60 text-xs font-medium uppercase">
-                  <User size={14} /> Posture
-                </div>
-                <div className={`font-semibold ${getStatusColor(metrics?.posture, 'posture')}`}>
-                  {metrics?.posture || "Unknown"}
-                </div>
-              </div>
-              <div className="space-y-1 col-span-2">
-                <div className="flex items-center gap-1.5 text-textMain/60 text-xs font-medium uppercase">
-                  <Activity size={14} /> Motion
-                </div>
-                <div className={`font-semibold ${getStatusColor(metrics?.motion, 'motion')}`}>
-                  {metrics?.motion || "Unknown"}
-                </div>
               </div>
             </div>
 

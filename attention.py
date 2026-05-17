@@ -1,8 +1,9 @@
 import numpy as np
+import math
 
 class AttentionAnalyzer:
     def __init__(self):
-        pass
+        self.current_attention = 80.0
 
     def get_invalid_state(self, error_msg):
         return {
@@ -18,6 +19,8 @@ class AttentionAnalyzer:
 
     def analyze(self, frame, face_results):
         if not face_results or not face_results.face_landmarks:
+            # Gradually decay current_attention towards 0.0 when face is not found
+            self.current_attention = 0.85 * self.current_attention + 0.15 * 0.0
             return self.get_invalid_state("No face landmarks")
 
         face_landmarks = face_results.face_landmarks[0]
@@ -57,10 +60,10 @@ class AttentionAnalyzer:
         if top_to_eye < 0.01:
             top_to_eye = 0.01
             
-        # Normal ratio is roughly ~1.2 to 1.5
+        # Normal ratio is roughly ~1.0 to 1.3
         vertical_ratio = eye_to_chin / top_to_eye
-        # Normalize pitch: 0 is centered. negative is looking down, positive is looking up.
-        nose_offset_y = (1.35 - vertical_ratio) # Approximation
+        # Normalize pitch: centered around 1.10 (more robust baseline for webcam tilt)
+        nose_offset_y = (1.10 - vertical_ratio)
 
         # 3. FACE CENTERING IN FRAME (Soft indicator)
         frame_center_x = 0.5
@@ -68,38 +71,62 @@ class AttentionAnalyzer:
         center_dev_x = abs(nose.x - frame_center_x)
         center_dev_y = abs(nose.y - frame_center_y)
         
-        # Create continuous, soft score (Base 100)
-        score = 100.0
-        
-        # Soft penalty for yaw (Exponential decay curve: small deviations barely register)
-        yaw_penalty = min(80.0, (abs(nose_offset_x) ** 1.5) * 170.0)
-        score -= yaw_penalty
-        
-        # Soft penalty for pitch 
-        pitch_penalty = min(60.0, (abs(nose_offset_y) ** 1.5) * 120.0)
-        score -= pitch_penalty
-        
-        # Very soft penalty for centering (tolerates laptop webcams)
-        center_penalty = ((center_dev_x + center_dev_y) ** 2) * 50.0
-        score -= center_penalty
-        
-        # Clamp score between 0 and 100
-        score = max(0.0, min(100.0, score))
-        
-        is_attentive = True # No instant collapse
-        
-        # Labels: Focused, Slight Left, Slight Right, Slight Up, Slight Down, Distracted, Looking Away
-        if score < 20:
-            direction = "Looking Away"
-        elif score < 45:
-            direction = "Distracted"
-        elif score < 75:
-            if abs(nose_offset_x) > abs(nose_offset_y):
-                direction = "Slight Right" if nose_offset_x < 0 else "Slight Left"
-            else:
-                direction = "Slight Down" if nose_offset_y < 0 else "Slight Up"
+        # Raw value absolute deviations
+        yaw_abs = abs(nose_offset_x)
+        pitch_abs = abs(nose_offset_y)
+
+        # Baseline Human Assumption
+        score = 85.0
+
+        # Highly tolerant Yaw dead zone (0.28) and soft penalty curve
+        if yaw_abs < 0.28:
+            yaw_penalty = 0.0
         else:
+            yaw_penalty = ((yaw_abs - 0.28) ** 1.8) * 60.0
+        yaw_penalty = max(0.0, min(80.0, yaw_penalty))
+        score -= yaw_penalty
+
+        # Highly tolerant Pitch dead zone (0.35) and soft penalty curve
+        if pitch_abs < 0.35:
+            pitch_penalty = 0.0
+        else:
+            pitch_penalty = ((pitch_abs - 0.35) ** 2.0) * 35.0
+        pitch_penalty = max(0.0, min(45.0, pitch_penalty))
+        score -= pitch_penalty
+
+        # Extremely low centering penalty (tolerates sitting off-center)
+        center_penalty = ((center_dev_x + center_dev_y) ** 2) * 5.0
+        score -= center_penalty
+
+        # Alignment bonus: generous alignment bonus when within dead zones
+        alignment_bonus = 0.0
+        if yaw_abs < 0.28 and pitch_abs < 0.35:
+            yaw_factor = (0.28 - yaw_abs) / 0.28
+            pitch_factor = (0.35 - pitch_abs) / 0.35
+            alignment_bonus = 15.0 * (yaw_factor * pitch_factor)
+        score += alignment_bonus
+
+        # Clamp raw score between 0 and 100
+        score = max(0.0, min(100.0, score))
+
+        # Temporal Smoothing
+        self.current_attention = 0.85 * self.current_attention + 0.15 * score
+        self.current_attention = max(0.0, min(100.0, self.current_attention))
+
+        smoothed_score = int(math.ceil(self.current_attention))
+        is_attentive = smoothed_score >= 40.0
+
+        # Recalibrated Attention Labels
+        if smoothed_score >= 80:
             direction = "Focused"
+        elif smoothed_score >= 60:
+            direction = "Attentive"
+        elif smoothed_score >= 40:
+            direction = "Slightly Distracted"
+        elif smoothed_score >= 20:
+            direction = "Distracted"
+        else:
+            direction = "Looking Away"
 
         # Pseudo values to strictly maintain contract with other modules
         yaw = nose_offset_x * 90.0
@@ -109,7 +136,7 @@ class AttentionAnalyzer:
         return {
             "valid": True,
             "is_attentive": is_attentive,
-            "attention_score": score,
+            "attention_score": smoothed_score,
             "error": "",
             "yaw": yaw,
             "pitch": pitch,
